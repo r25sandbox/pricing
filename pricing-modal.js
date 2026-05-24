@@ -2,34 +2,54 @@
 ============================================================
 pricing-modal.js
 ============================================================
-Version : 1.0
-Date    : 2026-05-23
+Version : 1.1
+Date    : 2026-05-24
 Purpose : Inspection Request modal logic. Loaded by Carrd
           Pricing embed (Realty25_Pricing_Carrd_Embed.html
           v1.10+) via <script src> reference. Modal HTML and
           CSS still live inline in the embed - only the JS
           payload is externalized to keep the embed under
-          Carrd's parser size threshold (v1.9 at ~12K choked
-          with SyntaxError; this split brings embed to ~9K).
+          Carrd's parser size threshold.
 
-Repo    : r25sandbox/rec/pricing-modal.js
-Hosting : https://r25sandbox.github.io/rentcomps/pricing-modal.js
+Repo    : pricing/pricing-modal.js (new dedicated repo)
+Hosting : GitHub Pages of `pricing` repo
 Cache   : Bump ?vNN on embed <script src> after each commit.
 
 Pairs with: Realty25_Pricing_Carrd_Embed.html v1.10+
+Backend   : rentalcomp-proxy v2.19 POST /inspection-request
+            (dev: rentalcomp-proxy-dev.alik-levin.workers.dev)
+            (prod: rentalcomp-proxy.alik-levin.workers.dev)
 
 ------------------------------------------------------------
 Changelog (most recent 5)
 ------------------------------------------------------------
+v1.1  2026-05-24  Wired doSubmit() to real backend.
+                  POSTs to rentalcomp-proxy-dev
+                  /inspection-request (Worker v2.19). Body:
+                  { firstName, lastName, email, phone,
+                  inspectionType }.
+                  Response handling per Worker contract:
+                  - 200 {ok:true} -> terminal success state
+                    (matches placeholder v1.0 UX)
+                  - 400 -> inline red error from response.error
+                  - 405/500/network -> generic retry message,
+                    button re-enabled so user can retry
+                  Endpoint constant ENDPOINT at top of IIFE
+                  for one-line dev->prod swap at cutover.
+                  "Sending..." button label during in-flight
+                  request to prevent double-submit.
 v1.0  2026-05-23  Initial extraction. Logic identical to v1.9
-                  inline IIFE - just relocated. No behavior
-                  changes. Submit remains a placeholder
-                  success state; backend wiring is the next
-                  phase.
+                  inline IIFE. Placeholder success state.
 ============================================================
 */
 
 (function(){
+  // -- Endpoint --
+  // DEV:  https://rentalcomp-proxy-dev.alik-levin.workers.dev/inspection-request
+  // PROD: https://rentalcomp-proxy.alik-levin.workers.dev/inspection-request
+  // Swap to PROD when Alik promotes the Worker. No other changes needed.
+  var ENDPOINT="https://rentalcomp-proxy-dev.alik-levin.workers.dev/inspection-request";
+
   function gi(id){return document.getElementById(id);}
   var overlay=gi("r25ir-overlay");
   if(!overlay) return; // embed not on page - bail silently
@@ -81,14 +101,53 @@ v1.0  2026-05-23  Initial extraction. Logic identical to v1.9
     var f=first.value.trim();
     var l=last.value.trim();
     var e=email.value.trim();
+    var p=phone.value.trim();
     if(!f){showMsg("Please enter your first name.","#f87171");return;}
     if(!l){showMsg("Please enter your last name.","#f87171");return;}
     if(!e||!validEmail(e)){showMsg("Please enter a valid email.","#f87171");return;}
-    // Placeholder success - backend wiring is next phase.
-    // currentType holds "PCI" or "MoveOut" - ready for /inspection-request POST.
+
     submitBtn.disabled=true;
-    submitBtn.textContent="Sent";
-    showMsg("Thanks - request received. I will be in touch shortly.","#86efac");
+    submitBtn.textContent="Sending...";
+
+    var payload={
+      firstName:f,
+      lastName:l,
+      email:e,
+      phone:p,
+      inspectionType:currentType
+    };
+
+    fetch(ENDPOINT,{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload)
+    }).then(function(res){
+      // Try to parse body regardless of status - server returns JSON for both success and error
+      return res.json().then(function(data){return {status:res.status,data:data};}).catch(function(){return {status:res.status,data:null};});
+    }).then(function(r){
+      if(r.status===200&&r.data&&r.data.ok===true){
+        // Terminal success - per Worker contract, do not retry
+        submitBtn.textContent="Sent";
+        showMsg("Thanks - request received. I will be in touch shortly.","#86efac");
+        return;
+      }
+      if(r.status===400&&r.data&&r.data.error){
+        // Validation failure from server - show its message inline
+        submitBtn.disabled=false;
+        submitBtn.textContent="Submit Request";
+        showMsg(r.data.error,"#f87171");
+        return;
+      }
+      // 405/500/anything else
+      submitBtn.disabled=false;
+      submitBtn.textContent="Submit Request";
+      showMsg("Something went wrong. Please try again.","#f87171");
+    }).catch(function(){
+      // Network failure
+      submitBtn.disabled=false;
+      submitBtn.textContent="Submit Request";
+      showMsg("Network error. Please try again.","#f87171");
+    });
   }
 
   // Wire Request pill buttons
